@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 TriM
+# SPDX-License-Identifier: AGPL-3.0-only
+function(spectral_add_juce)
+    get_filename_component(project_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+    set(default_juce "")
+    if(DEFINED ENV{JUCE_DIR} AND NOT "$ENV{JUCE_DIR}" STREQUAL "")
+        set(default_juce "$ENV{JUCE_DIR}")
+    elseif(EXISTS "${project_root}/third_party/JUCE/CMakeLists.txt")
+        set(default_juce "${project_root}/third_party/JUCE")
+    endif()
+    set(JUCE_DIR "${default_juce}" CACHE PATH "Path to JUCE 8.0.4 sources")
+    if(NOT JUCE_DIR OR NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "JUCE 8.0.4 is required. Set JUCE_DIR or use third_party/JUCE.")
+    endif()
+    add_subdirectory("${JUCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/JUCE")
+endfunction()
