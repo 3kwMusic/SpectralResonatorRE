@@ -8,7 +8,9 @@
 #include <array>
 #include <atomic>
 #include <complex>
+#include <limits>
 #include <vector>
+#include "SpectrogramStream.h"
 
 class SpectralEngine
 {
@@ -52,6 +54,10 @@ public:
     void prepare(double sampleRate, int samplesPerBlock, const Settings& initialSettings);
     void reset();
     void suspend() noexcept { activationResetPending = true; }
+    // Live supplies input-activity metadata outside its DSP core. The VST3
+    // adapter decides once per complete host callback, before automation splits.
+    bool beginHostBlock(bool inputActive, bool midiPending, int numSamples) noexcept;
+    void processInactive(float* outputLeft, float* outputRight, int numSamples) noexcept;
     enum IntegerCallback : unsigned
     {
         frequencyNoteCallback = 1u,
@@ -68,8 +74,17 @@ public:
     float fundamentalForDisplay() const { return displayFundamental.load(); }
     bool copyVisualizationData(VisualizationData& destination) const;
     double visualizationSampleRate() const { return publishedSampleRate.load(std::memory_order_relaxed); }
+    void setSpectrogramActive(bool active) { spectrogram.setActive(active); }
+    bool readSpectrogramFrame(SpectrogramStream::Frame& frame) { return spectrogram.read(frame); }
+    std::uint64_t spectrogramGeneration() const { return spectrogram.currentGeneration(); }
 
 private:
+    static constexpr std::uint64_t inactivitySamples = 3584;
+    static constexpr float silenceThreshold = 1.0e-6f;
+    std::uint64_t quietSamples = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t activityGuardSamples = 0;
+    bool hostBlockActive = false;
+    bool hasPendingResonance() const noexcept;
     static constexpr int fftSize = 1024;
     static constexpr int hopSize = 512;
     static constexpr int spectrumSize = fftSize / 2 + 1;
@@ -90,7 +105,7 @@ private:
         float increment = 0.0f;
         float direction = 1.0f;
         float countdown = 0.0f;
-
+        // Granular state: release is the partial's damped decay, not Mod Rate.
         float granularEnvelope = 0.0f;
         float granularDecayCoefficient = 0.0f;
         float granularPitchScale = 1.0f;
@@ -103,6 +118,8 @@ private:
         float pitch = 0.0f;
     };
 
+    // Native storage is 512 four-lane slots per stereo bank. These states
+    // outlive audible voices, Harmonics masks and out-of-band partials.
     struct RandomSlot
     {
         std::array<ModulationState, 4> modulation {};
@@ -256,7 +273,8 @@ private:
     std::array<std::complex<float>, fftSize> fftOutput {};
     std::array<float, fftSize> analysisWindow {};
     std::array<float, kernelSize> kernel {};
-
+    // Damping depends only on integer harmonic and HF/LF. All harmonics at
+    // 255 and above have the same clamped result, including hidden slots.
     std::array<float, maxHarmonics> dampingGainCache {};
     std::array<std::uint64_t, maxHarmonics> dampingGainRevision {};
     std::uint64_t dampingRevision = 0;
@@ -286,4 +304,5 @@ private:
     std::atomic<double> publishedSampleRate {44100.0};
     std::atomic<std::uint32_t> visualizationSequence { 0 };
     std::atomic<float> displayFundamental { 110.0f };
+    SpectrogramStream spectrogram;
 };

@@ -4,7 +4,7 @@
 #include "PluginEditor.h"
 
 SpectralResonatorEditor::SpectralResonatorEditor(SpectralResonatorProcessor& p)
-    : AudioProcessorEditor(&p), processor(p)
+    : AudioProcessorEditor(&p), processor(p), spectrogramDisplay(p)
 {
     setLookAndFeel(&modernLookAndFeel);
     addChoice(Parameters::pitchMode, Parameters::pitchModeChoices());
@@ -39,7 +39,26 @@ SpectralResonatorEditor::SpectralResonatorEditor(SpectralResonatorProcessor& p)
     configureKnob(inputSendSlider, Parameters::inputSendDb, "Input Send", inputSendLabel);
     configureKnob(unisonAmountSlider, Parameters::unisonAmount, "Uni. Amt", unisonAmountLabel);
     configureKnob(dryWetSlider, Parameters::dryWet, "Dry / Wet", dryWetLabel);
-    setSize(1120, 620);
+    for (auto* tab : {&spectrogramTab, &spectrumTab})
+    {
+        tab->setClickingTogglesState(true);
+        tab->setRadioGroupId(9701);
+        tab->setColour(juce::TextButton::buttonColourId, SpectralPalette::background);
+        tab->setColour(juce::TextButton::buttonOnColourId, SpectralPalette::border);
+        tab->setColour(juce::TextButton::textColourOnId, SpectralPalette::text);
+        tab->setColour(juce::TextButton::textColourOffId, SpectralPalette::mutedText);
+        tab->onClick = [this]
+        {
+            spectrogramDisplay.setVisible(spectrogramTab.getToggleState());
+            repaint(partialDisplayBounds);
+        };
+        addAndMakeVisible(*tab);
+    }
+    spectrogramTab.setToggleState(true, juce::dontSendNotification);
+    spectrogramTab.setTooltip("Frequency across, time upwards. Dry: yellow; wet: blue.");
+    spectrumTab.setTooltip("Input FFT spectrum and resonant partial positions");
+    addAndMakeVisible(spectrogramDisplay);
+    setSize(880, 500);
     startTimerHz(15);
     updateControlStates();
 }
@@ -50,7 +69,8 @@ void SpectralResonatorEditor::configureKnob(juce::Slider& slider, const juce::St
                                             const juce::String& name, juce::Label& label)
 {
     slider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
-    slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 88, 20);
+    slider.setComponentID(id);
+    slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 88, 18);
     slider.setRotaryParameters(juce::MathConstants<float>::pi * 1.22f,
                                juce::MathConstants<float>::pi * 2.78f, true);
     slider.setColour(juce::Slider::rotarySliderFillColourId, SpectralPalette::accent);
@@ -68,6 +88,7 @@ void SpectralResonatorEditor::configureHorizontalSlider(juce::Slider& slider, co
                                                         const juce::String& name, juce::Label& label)
 {
     slider.setSliderStyle(juce::Slider::LinearHorizontal);
+    slider.setComponentID(id);
     slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 64, 20);
     slider.setColour(juce::Slider::trackColourId, SpectralPalette::accent);
     slider.setColour(juce::Slider::thumbColourId, SpectralPalette::text);
@@ -139,10 +160,8 @@ void SpectralResonatorEditor::updateControlStates()
     glideSlider.setEnabled(midi && !poly);
     pitchBendSlider.setEnabled(midi);
     const auto showFrequency = !midi && !scale;
-    for (auto* slider : { &frequencySlider, &frequencyNoteSlider, &transposeSlider, &transposeScaleSlider })
-        slider->setVisible(false);
-    for (auto* label : { &frequencyLabel, &frequencyNoteLabel, &transposeLabel, &transposeScaleLabel })
-        label->setVisible(false);
+    // Keep the active component visible across timer ticks. Hiding a Slider
+    // closes its text editor even if it is shown again in the same callback.
     frequencySlider.setVisible(showFrequency && !noteDial);
     frequencyLabel.setVisible(showFrequency && !noteDial);
     frequencyNoteSlider.setVisible(showFrequency && noteDial);
@@ -256,17 +275,17 @@ void SpectralResonatorEditor::paint(juce::Graphics& g)
 {
     g.fillAll(SpectralPalette::background);
     g.setColour(SpectralPalette::text);
-    g.setFont(juce::FontOptions(21.0f, juce::Font::bold));
-    g.drawText("SPECTRAL RESONATOR", 22, 16, 320, 30, juce::Justification::left);
+    g.setFont(juce::FontOptions(18.0f, juce::Font::bold));
+    g.drawText("SPECTRAL RESONATOR", 18, 9, 240, 28, juce::Justification::left);
     g.setColour(SpectralPalette::partialAccent);
     g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
-    g.drawText("RE", 240, 22, 28, 18, juce::Justification::centred);
+    g.drawText("RE", 207, 14, 28, 18, juce::Justification::centred);
     g.setColour(SpectralPalette::mutedText);
-    g.setFont(juce::FontOptions(10.0f));
-    g.drawText("TUNED RESONANCES AND HARMONIC MODULATION", 650, 22, 446, 18, juce::Justification::right);
-    for (const auto& area : { juce::Rectangle<int>(16, 64, 288, 540),
-                              juce::Rectangle<int>(316, 64, 536, 540),
-                              juce::Rectangle<int>(864, 64, 240, 540) })
+    g.setFont(juce::FontOptions(9.0f));
+    g.drawText("TUNED RESONANCES AND HARMONIC MODULATION", 460, 14, 406, 18, juce::Justification::right);
+    for (const auto& area : { juce::Rectangle<int>(12, 48, 252, 440),
+                              juce::Rectangle<int>(274, 48, 398, 440),
+                              juce::Rectangle<int>(682, 48, 186, 440) })
     {
         g.setColour(SpectralPalette::panel);
         g.fillRoundedRectangle(area.toFloat(), 8.0f);
@@ -275,51 +294,54 @@ void SpectralResonatorEditor::paint(juce::Graphics& g)
     }
     g.setColour(SpectralPalette::mutedText);
     g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
-    g.drawText("PITCH AND DECAY", 30, 74, 200, 16, juce::Justification::left);
-    g.drawText("PARTIALS AND MODULATION", 330, 74, 240, 16, juce::Justification::left);
-    g.drawText("OUTPUT", 878, 74, 160, 16, juce::Justification::left);
-    g.drawText("UNISON", 878, 226, 160, 16, juce::Justification::left);
-    drawPartialDisplay(g, partialDisplayBounds);
+    g.drawText("PITCH AND DECAY", 24, 54, 228, 14, juce::Justification::left);
+    g.drawText("PARTIALS AND MODULATION", 286, 54, 374, 14, juce::Justification::left);
+    g.drawText("OUTPUT", 694, 54, 162, 14, juce::Justification::left);
+    g.drawText("UNISON", 694, 180, 162, 14, juce::Justification::left);
+    if (!spectrogramTab.getToggleState()) drawPartialDisplay(g, partialDisplayBounds.withTrimmedTop(28));
 }
 
 void SpectralResonatorEditor::resized()
 {
-    pitchModeBox.setBounds(32, 96, 256, 28);
-    monoPolyBox.setBounds(32, 138, 120, 26);
-    polyphonyLabel.setBounds(164, 132, 120, 14);
-    polyphonyBox.setBounds(158, 146, 130, 24);
-    midiGateButton.setBounds(28, 178, 122, 24);
-    useScaleButton.setBounds(148, 178, 140, 24);
-    auto placeKnob = [] (juce::Slider& slider, juce::Label& label, int x, int y, int w = 124, int h = 104)
+    pitchModeBox.setBounds(24, 76, 228, 24);
+    monoPolyBox.setBounds(24, 116, 108, 22);
+    polyphonyLabel.setBounds(144, 102, 108, 12);
+    polyphonyBox.setBounds(144, 116, 108, 22);
+    midiGateButton.setBounds(22, 142, 112, 20);
+    useScaleButton.setBounds(142, 142, 112, 20);
+    auto placeKnob = [] (juce::Slider& slider, juce::Label& label, int x, int y, int w = 108, int h = 64)
     {
-        label.setBounds(x, y, w, 16);
-        slider.setBounds(x + 4, y + 18, w - 8, h);
+        label.setBounds(x, y, w, 14);
+        slider.setBounds(x + 4, y + 16, w - 8, h);
     };
-    placeKnob(glideSlider, glideLabel, 28, 212, 124, 84);
-    placeKnob(pitchBendSlider, pitchBendLabel, 160, 212, 124, 84);
-    scaleRootBox.setBounds(28, 216, 124, 28);
-    scaleBox.setBounds(160, 216, 128, 28);
-    frequencyDialModeBox.setBounds(32, 320, 120, 24);
-    placeKnob(frequencySlider, frequencyLabel, 28, 348, 124, 90);
-    placeKnob(frequencyNoteSlider, frequencyNoteLabel, 28, 348, 124, 90);
-    placeKnob(transposeSlider, transposeLabel, 28, 348, 124, 90);
-    placeKnob(transposeScaleSlider, transposeScaleLabel, 28, 348, 124, 90);
-    placeKnob(decaySlider, decayLabel, 160, 348, 124, 90);
-    placeKnob(highDampSlider, highDampLabel, 28, 462, 124, 68);
-    placeKnob(lowDampSlider, lowDampLabel, 160, 462, 124, 68);
-    stretchLabel.setBounds(32, 554, 74, 16);
-    stretchSlider.setBounds(104, 552, 184, 22);
-    shiftLabel.setBounds(32, 580, 74, 16);
-    shiftSlider.setBounds(104, 578, 184, 22);
-    partialDisplayBounds = { 330, 100, 508, 254 };
-    modModeBox.setBounds(330, 370, 508, 28);
-    placeKnob(modRateSlider, modRateLabel, 342, 414, 216, 90);
-    placeKnob(pitchModSlider, pitchModLabel, 598, 414, 216, 90);
-    harmonicsLabel.setBounds(330, 542, 90, 18);
-    harmonicsSlider.setBounds(420, 540, 288, 26);
-    quantizeButton.setBounds(714, 540, 124, 26);
-    placeKnob(inputSendSlider, inputSendLabel, 880, 102, 208, 96);
-    unisonBox.setBounds(880, 246, 208, 28);
-    placeKnob(unisonAmountSlider, unisonAmountLabel, 880, 292, 208, 96);
-    placeKnob(dryWetSlider, dryWetLabel, 880, 448, 208, 112);
+    placeKnob(glideSlider, glideLabel, 24, 166);
+    placeKnob(pitchBendSlider, pitchBendLabel, 144, 166);
+    scaleRootBox.setBounds(24, 184, 64, 24);
+    scaleBox.setBounds(96, 184, 156, 24);
+    frequencyDialModeBox.setBounds(24, 250, 108, 22);
+    placeKnob(frequencySlider, frequencyLabel, 24, 278);
+    placeKnob(frequencyNoteSlider, frequencyNoteLabel, 24, 278);
+    placeKnob(transposeSlider, transposeLabel, 24, 278);
+    placeKnob(transposeScaleSlider, transposeScaleLabel, 24, 278);
+    placeKnob(decaySlider, decayLabel, 144, 278);
+    placeKnob(highDampSlider, highDampLabel, 24, 362);
+    placeKnob(lowDampSlider, lowDampLabel, 144, 362);
+    stretchLabel.setBounds(24, 448, 54, 18);
+    stretchSlider.setBounds(78, 446, 174, 22);
+    shiftLabel.setBounds(24, 470, 54, 18);
+    shiftSlider.setBounds(78, 468, 174, 20);
+    partialDisplayBounds = { 286, 76, 374, 238 };
+    spectrogramTab.setBounds(286, 76, 126, 22);
+    spectrumTab.setBounds(416, 76, 164, 22);
+    spectrogramDisplay.setBounds(partialDisplayBounds.withTrimmedTop(28));
+    modModeBox.setBounds(286, 322, 374, 24);
+    placeKnob(modRateSlider, modRateLabel, 286, 354, 180);
+    placeKnob(pitchModSlider, pitchModLabel, 480, 354, 180);
+    harmonicsLabel.setBounds(286, 448, 70, 18);
+    harmonicsSlider.setBounds(356, 446, 208, 22);
+    quantizeButton.setBounds(570, 446, 90, 22);
+    placeKnob(inputSendSlider, inputSendLabel, 694, 76, 162, 70);
+    unisonBox.setBounds(694, 198, 162, 24);
+    placeKnob(unisonAmountSlider, unisonAmountLabel, 694, 238, 162, 70);
+    placeKnob(dryWetSlider, dryWetLabel, 694, 350, 162, 96);
 }

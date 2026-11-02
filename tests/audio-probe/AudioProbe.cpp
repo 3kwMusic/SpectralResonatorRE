@@ -543,7 +543,7 @@ void runEditorProbe()
 {
     SpectralResonatorProcessor processor;
     std::unique_ptr<juce::AudioProcessorEditor> editor(processor.createEditor());
-    require(editor->getWidth() == 1120 && editor->getHeight() == 620, "Unexpected editor size");
+    require(editor->getWidth() == 880 && editor->getHeight() == 500, "Unexpected editor size");
     setChoice(processor, Parameters::pitchMode, static_cast<int>(Parameters::PitchMode::midi), 2);
     setValue(processor, Parameters::useScale, 1.0f);
     setChoice(processor, Parameters::scale, 3, 36);

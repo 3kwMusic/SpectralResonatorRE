@@ -43,7 +43,8 @@ void SpectralEngine::prepare(double newSampleRate, int, const Settings& initialS
         analysisWindow[i] *= windowScale;
     }
     buildKernel();
-
+    // prepare is the JUCE adapter's configuration-rebuild boundary. Native
+    // config+330 also reconstructs at an unchanged rate; reset is separate.
     if (bankSeedsReady) { randomSeeded=false;bankSeedsReady=false; }
     seedRandom();
     initialiseCore();
@@ -160,11 +161,12 @@ void SpectralEngine::initialiseRandomSlots()
     const auto maximum = juce::jmax(1.0f, frameRate / (0.005f * (1-r) + 5*r));
     for (int channel = 0; channel < 2; ++channel)
     {
-
+        // Temporary template draws its oscillator phase from the primary bank;
+        // its Granular constructor uses the separate auxiliary stream.
         randomUnit4(channel);
         for (auto& slot : randomSlots[channel])
         {
-
+            // Copied slot constructor: Granular countdown draw, then phase draw.
             const auto countdown = randomUnit4(channel);
             const auto phase = randomUnit4(channel);
             slot = RandomSlot {};
@@ -180,7 +182,9 @@ void SpectralEngine::initialiseRandomSlots()
     }
     for (int channel=0; channel<2; ++channel)
     {
-
+        // Recovered bank constructor return boundary: fixed-mode reset,
+        // two per-slot phase draws, then three full phase reset passes.
+        // The Granular countdown drawn above is retained throughout.
         resetRandomBank(channel, 0, 1);
         for (auto& slot : randomSlots[channel])
         {
@@ -189,7 +193,6 @@ void SpectralEngine::initialiseRandomSlots()
             for (int lane=0; lane<4; ++lane) slot.phase[lane]=phaseFromUnit(random[lane]);
         }
         for (int pass=0; pass<3; ++pass) rerandomisePhases(channel, false);
-
         if (settings.unisonVoices != 1)
             resetRandomBank(channel, 0, settings.unisonVoices);
         if (settings.modMode != 0)
@@ -210,7 +213,6 @@ float SpectralEngine::phaseFromUnit(float unit) noexcept
 
 float SpectralEngine::pitchModDepth(float semitones) noexcept
 {
-
     const auto x = semitones * 0.083333336f;
     auto value = std::fma(0.013487903401255608f, x, 0.052174501121044159f);
     value = std::fma(x, value, 0.2412874847650528f);
@@ -230,6 +232,10 @@ void SpectralEngine::resetVoice(Voice& voice)
 
 void SpectralEngine::initialiseCore()
 {
+    quietSamples = std::numeric_limits<std::uint64_t>::max();
+    activityGuardSamples = 0;
+    hostBlockActive = false;
+    spectrogram.invalidate();
     coefficientMetadataDirty=true;
     refreshDampingGainCache();
     for (auto& voice : voices) { voice = Voice {}; }
@@ -259,6 +265,8 @@ void SpectralEngine::initialiseCore()
 
 void SpectralEngine::clearSignalBuffers()
 {
+    quietSamples = std::numeric_limits<std::uint64_t>::max();
+    spectrogram.invalidate();
     for(int channel=0;channel<2;++channel)
     {
         inputHistory[channel].fill(0);dryHistory[channel].fill(0);synthesisHistory[channel].fill(0);
@@ -277,7 +285,8 @@ void SpectralEngine::reset()
     coefficientMetadataDirty=true;
     for(int channel=0;channel<2;++channel)
     {
-
+        // bcb650 consumes the current stream; it never reseeds or reconstructs
+        // Wander/Granular/Chorus. The absolute clock/hop remainder is retained.
         rerandomisePhases(channel,false);
         for(auto& slot:randomSlots[channel]){slot.amplitude.fill(0);slot.target.fill(0);}
     }
@@ -325,7 +334,9 @@ void SpectralEngine::setSettings(const Settings& newSettings, unsigned integerCa
             || settings.frequencyHz != newSettings.frequencyHz
             || settings.frequencyNote != newSettings.frequencyNote
             || settings.frequencyDialMode != newSettings.frequencyDialMode);
-
+    // RealtimeModel<int> compares its unrounded float stream before invoking
+    // a setter. Transpose/scale-degree setters dirty metadata even when their
+    // rounded values stay equal. The dirty bit is consumed once at hop sync.
     coefficientMetadataDirty |= (integerCallbacks & (transposeCallback | scaleDegreeCallback)) != 0 || internalPitchDirty
         || settings.pitchMode!=newSettings.pitchMode || settings.monoPolyMode!=newSettings.monoPolyMode
         || settings.polyphony!=newSettings.polyphony || settings.unisonVoices!=newSettings.unisonVoices
@@ -345,7 +356,8 @@ void SpectralEngine::setSettings(const Settings& newSettings, unsigned integerCa
     if (decayChanged) { refreshDecayCoefficients();retimeReleasedVoices(); }
     if (managerChanged) releaseVoices(true);
     if (settings.pitchMode == 0) displayFundamental.store(internalFrequency());
-
+    // Mode; Mode setter then sees the new Unison. Separate blocks remain
+    // separate callback batches, rather than being reordered globally.
     if (unisonChanged)
         for (int channel=0; channel<2; ++channel)
         {
@@ -463,7 +475,8 @@ bool SpectralEngine::forcePendingVictims()
 
 int SpectralEngine::voiceMode() const
 {
-
+    // The Transmute voice constructor selects generic envelope mode0.
+    // Public PitchMode/MonoPoly/Gate are separate bank/manager fields.
     return 0;
 }
 
@@ -533,7 +546,8 @@ void SpectralEngine::setVoiceStage(Voice& voice, VoiceStage stage)
 
 void SpectralEngine::beginVoice(Voice& voice)
 {
-
+    // bd46c0's final overrides make attack/decay zero and sustain1.
+    // Glide controls the independent pitch mapper, never these stage times.
     setVoiceStage(voice, VoiceStage::hold);
     voice.envelope = 1.0f;
 }
@@ -600,7 +614,8 @@ void SpectralEngine::noteOff(int note)
                 if (held.active && (!fallback || held.age > fallback->age)) fallback=&held;
             if (fallback)
             {
-
+                // Native Mono returns to the last still-held note without
+                // restarting the generic envelope or replacing the partial tail.
                 voice.note=fallback->note;voice.noteOn=true;voice.forceStopped=false;
                 setVoicePitch(voice,fallback->note,true);
                 continue;
@@ -627,10 +642,11 @@ void SpectralEngine::releaseVoice(Voice& voice, bool force)
     voice.releasing = true;
     voice.forceStopped = force;
     setVoiceStage(voice, VoiceStage::release);
-
+    // Native bd2a40 primes the ramp once without committing the returned value.
     if (voice.rampRemaining > 0) --voice.rampRemaining;
     voice.rampPosition = std::fma(-voice.rampIncrement,static_cast<float>(voice.rampRemaining),1.0f);
-
+    // The native force-stop callback clears only the matching Poly voice's
+    // partial states. Mono and ordinary note-off retain the resonator tail.
     if (force && settings.pitchMode == 1 && settings.monoPolyMode == 1)
     {
         const auto owner = static_cast<int>(&voice - voices.data());
@@ -671,13 +687,19 @@ void SpectralEngine::refreshDecayCoefficients()
     for(auto& bank:randomSlots)for(auto& slot:bank)for(int lane=0;lane<4;++lane)
     {
         slot.decay[lane]=cachedDampingGain(slot.harmonic[lane])*base;
-
+        // slot.decay is authoritative immediately. The Granular copy is a
+        // derived cache, synchronized in synthesiseSample before its sole
+        // product read in modulationGroup. Avoid dirtying all modulation-state
+        // cache lines for every automation sample.
     }
 }
 
 void SpectralEngine::refreshDampingGainCache()
 {
-
+    // Invalidate by parameter revision, rather than evaluating 256 exponentials
+    // when the current 16-voice/U8 layout only uses harmonics 0..15. Every slot
+    // still gets its new coefficient immediately; an expanded layout computes
+    // newly needed harmonics before their first use. No approximation/coalescing.
     dampingCacheHigh=juce::jlimit(0.0f,1.0f,settings.highFreqDamp*.01f);
     dampingCacheLow=juce::jlimit(0.0f,1.0f,settings.lowFreqDamp*.01f);
     dampingCacheExponent=static_cast<double>(-10.0f*(1.0f-2.0f*dampingCacheHigh));
@@ -749,7 +771,8 @@ float SpectralEngine::midiNoteFrequency(float note) const
 void SpectralEngine::setVoicePitch(Voice& voice, int note, bool reuse)
 {
     coefficientMetadataDirty=true;
-
+    // bc8ba0 retargets from the last returned note at mapper+48, rather
+    // than the ramp's already-advanced next position at mapper+28.
     if(reuse)voice.glideNote=voice.glideOutputNote;
     voice.glideTargetNote=static_cast<float>(note);
     voice.glidePosition=0;
@@ -809,13 +832,15 @@ float SpectralEngine::readMagnitude(int channel, float binPosition) const
 float SpectralEngine::partialDampingGain(int harmonic) const
 {
     const auto high = juce::jlimit(0.0f, 1.0f, settings.highFreqDamp * 0.01f);
-
+    // APVTS percentages and DSP model coefficients are distinct units.
+    // Current binary model constructors confirm both damping coefficients in [0,1].
     const auto low = juce::jlimit(0.0f, 1.0f, settings.lowFreqDamp * 0.01f);
     const auto position = juce::jmin(1.0f, static_cast<float>(harmonic) / 255.0f);
     auto highGain = 1.0f - 2.0f * high * position;
     if (high > 0.5f)
     {
-
+        // FMA231 creates IEEE bias 127 + log2(e)*d, hence exp(d).
+        // d tends to zero at 50%; expm1 retains the continuous linear limit.
         const auto d = static_cast<double>(-10.0f * (1.0f - 2.0f * high));
         if (d <= 0.001f)
             return (1.0f - position) * juce::jlimit(0.0f, 1.0f, 1.0f + 0.02f * harmonic - 0.2f * low);
@@ -863,7 +888,7 @@ std::array<SpectralEngine::ModulationResult, 4> SpectralEngine::modulationGroup(
             triggered[lane] = state.countdown < 1;
             any |= triggered[lane];
         }
-
+        // AVX mask controls lane replacement, never which RNG lanes advance.
         const auto random = any ? randomUnit4(channel) : std::array<float, 4> {};
         for (int lane = 0; lane < 4; ++lane)
         {
@@ -916,7 +941,7 @@ std::array<SpectralEngine::ModulationResult, 4> SpectralEngine::modulationGroup(
 SpectralEngine::ModulationResult SpectralEngine::modulationAmount(
     ModulationState& state, const ModulationState& pitchState, int channel, int lane, float frequency)
 {
-
+    // Scalar diagnostic adapter; the real processor always calls modulationGroup.
     std::array<ModulationState, 4> copies;
     copies.fill(state);
     copies[(lane+1)%4] = pitchState;
@@ -935,7 +960,7 @@ void SpectralEngine::analyseAndUpdatePartials()
         for (int i = 0; i < fftSize; ++i)
         {
             const auto index = static_cast<int>((sampleCounter + historySize - fftSize + i) % historySize);
-
+            // Original input boundary exchanges the two half frames after windowing.
             fftInput[(i + hopSize) % fftSize] = {
                 inputHistory[channel][index] * analysisWindow[i], 0.0f };
         }
@@ -988,7 +1013,8 @@ void SpectralEngine::updatePartialLayout()
                 auto& partial = voice.partials[unisonIndex * maxHarmonics + harmonic];
                 partial.harmonic = harmonic;
                 partial.unisonIndex = unisonIndex;
-
+                // Metadata/RealtimeModel constructor + callback chains identify
+                // PartialStretch [-1,1] and UnisonAmount [0,1]; APVTS displays percent.
                 const auto ratio = 1.0f + (1.0f + settings.stretch * 0.01f) * harmonic;
                 auto frequency = fundamental * ratio;
                 if (settings.quantize && frequency > 0.0f)
@@ -1013,7 +1039,6 @@ void SpectralEngine::updatePartialLayout()
                 const auto binPosition = frequency * shift * static_cast<float>(fftSize / sampleRate);
                 const auto damping = cachedDampingGain(harmonic);
                 partial.decayCoefficient = damping * decayBase;
-
                 partial.leftModulation.granularDecayCoefficient = partial.decayCoefficient;
                 partial.rightModulation.granularDecayCoefficient = partial.decayCoefficient;
                 const auto excitation = excitationEnabled(voice);
@@ -1023,6 +1048,8 @@ void SpectralEngine::updatePartialLayout()
         }
     }
 
+    // All allocated vectors have modulation state, including harmonics beyond
+    // the public 256 limit when the mono/internal layout retains poly capacity.
     for (int n = 0; n < totalBudget; ++n)
     {
         const auto owner = juce::jmin(polyphony-1, n / voiceBudget);
@@ -1071,7 +1098,9 @@ void SpectralEngine::synthesiseSample()
 {
     if (randomGroupCursor >= allocatedRandomGroups) return;
     const auto group = randomGroupCursor++;
-
+    // Native bcb820 reads the current Shift scalar and FFT for the group being
+    // visited; bd2be0 uses the current H threshold. Frequency/layout and MIDI
+    // excitation remain hop-cached. H must not prematurely latch a NoteOff.
     const auto analysisShift = std::exp2(-settings.shift / 12.0f);
     for (int channel = 0; channel < 2; ++channel)
     {
@@ -1089,7 +1118,7 @@ void SpectralEngine::synthesiseSample()
             states[lane]->granularDecayCoefficient = slot.decay[lane];
             anyValid |= slot.renderMask[lane];
         }
-
+        // Modulation always advances, even when all spectral lanes are hidden.
         const auto modulation = modulationGroup(states, channel, slot.frequency);
         bool anyAudible = false;
         if (anyValid)
@@ -1101,7 +1130,6 @@ void SpectralEngine::synthesiseSample()
                         std::fma(-slot.decay[lane], value, value));
                 slot.amplitude[lane] = slot.renderMask[lane] && std::isfinite(value)
                     ? juce::jmax(0.0f, value) : 0;
-
                 anyAudible |= slot.amplitude[lane] >= 0.001f;
             }
         for (int lane = 0; lane < 4; ++lane)
@@ -1113,7 +1141,7 @@ void SpectralEngine::synthesiseSample()
                 const auto radians = juce::MathConstants<float>::twoPi * frequency * hopSize / static_cast<float>(sampleRate);
                 slot.phase[lane] = std::remainder(slot.phase[lane] + radians, juce::MathConstants<float>::twoPi);
             }
-
+            // Voice bookkeeping and velocity are not extra output multipliers.
             const auto amplitude = slot.amplitude[lane] * modulation[lane].amplitude;
             if (anyAudible && slot.renderMask[lane] && std::isfinite(frequency) && frequency > 0)
             {
@@ -1178,7 +1206,8 @@ void SpectralEngine::renderSpectrum()
         for (int i = 0; i < fftSize; ++i)
         {
             const auto index = static_cast<int>((sampleCounter + i) % historySize);
-
+            // The spectral kernel already supplies the synthesis window.
+            // JUCE's inverse is 1/N normalised; no additional hop gain is required.
             synthesisHistory[channel][index] += fftOutput[(i + hopSize) % fftSize].real();
         }
         outputSpectrum[channel].fill({ 0.0f, 0.0f });
@@ -1204,22 +1233,71 @@ float SpectralEngine::applyOutputDynamics(float input, int channel)
     return input * gain;
 }
 
+bool SpectralEngine::hasPendingResonance() const noexcept
+{
+    for (int channel = 0; channel < 2; ++channel)
+        for (int group = 0; group < allocatedRandomGroups; ++group)
+        {
+            const auto& slot = randomSlots[channel][static_cast<size_t>(group)];
+            for (int lane = 0; lane < 4; ++lane)
+                if (slot.renderMask[lane] && slot.amplitude[lane] >= 0.001f) return true;
+        }
+    return false;
+}
+
+bool SpectralEngine::beginHostBlock(bool inputActive, bool midiPending, int numSamples) noexcept
+{
+    if (numSamples <= 0) return hostBlockActive;
+    const auto hasActivity = inputActive || midiPending;
+    auto active = hasActivity || activityGuardSamples != 0 || quietSamples < inactivitySamples;
+    // A valid Live input descriptor can keep processing even when all its
+    // samples are zero. Raw VST3 samples cannot express that distinction. Keep
+    // pending resonances alive too: Granular may open a silent envelope later.
+    // Check only at a prospective sleep, then amortize the scan with the guard.
+    const auto pendingResonance = !active && hasPendingResonance();
+    active |= pendingResonance;
+    if (active && !hostBlockActive) activationResetPending = true;
+    hostBlockActive = active;
+    // VST3 has no Live buffer-activity descriptor. Keep short input/MIDI events
+    // alive through the FFT/OLA pipeline before the output detector can see
+    // them. Count from this host block's end, including large/split callbacks.
+    // This guard is an adapter policy, separate from the native quiet counter.
+    if (hasActivity || pendingResonance)
+        activityGuardSamples = inactivitySamples + static_cast<std::uint64_t>(numSamples);
+    return active;
+}
+
+void SpectralEngine::processInactive(float* outputLeft, float* outputRight, int numSamples) noexcept
+{
+    std::fill_n(outputLeft, numSamples, 0.0f);
+    std::fill_n(outputRight, numSamples, 0.0f);
+    // Keep actual zero-output display frames flowing without advancing the DSP
+    // clock, oscillators, MIDI envelopes or random streams while dormant.
+    if (spectrogram.beginBlock(sampleRate))
+        for (int sample = 0; sample < numSamples; ++sample) spectrogram.push(0, 0, 0, 0);
+}
+
 void SpectralEngine::process(const float* inputLeft, const float* inputRight,
                              float* outputLeft, float* outputRight,
                              int numSamples, const juce::MidiBuffer& midi, bool bypass,
                              int midiStartSample, juce::MidiBufferIterator* midiCursor)
 {
-
+    // The processor has already flushed its current parameter snapshot. Native
+    // first activation and reactivation clear signal state after that flush,
+    // before consuming MIDI/sample data. Empty blocks do not consume the flag.
     if(numSamples>0 && activationResetPending){activationResetPending=false;reset();}
-
+    // Automation splits the audio buffer without copying or reallocating MIDI.
+    // Share a forward iterator across ranges so dense automation never rescans
+    // already consumed MIDI. Each range is half-open in original sample time.
     auto midiIterator = midiCursor != nullptr ? *midiCursor
         : midiStartSample > 0 ? midi.findNextSamplePosition(midiStartSample) : midi.cbegin();
     const auto midiEnd = midi.cend();
-
+    // Keep raw dry history separate so automation never rescales older samples.
     const auto excitationGain = std::pow(10.0f, settings.inputSendDb / 20.0f)
         * std::exp2(-settings.shift / 24.0f)
         * std::sqrt(juce::jmax(0.0f, settings.stretch * 0.01f + 1.001f))
         / std::sqrt(static_cast<float>(juce::jlimit(1, maxUnison, settings.unisonVoices)));
+    const auto captureSpectrogram = spectrogram.beginBlock(sampleRate);
     for (int sample = 0; sample < numSamples; ++sample)
     {
         while (midiIterator != midiEnd && (*midiIterator).samplePosition <= sample + midiStartSample)
@@ -1242,18 +1320,27 @@ void SpectralEngine::process(const float* inputLeft, const float* inputRight,
         const auto angle = (bypass ? 0.0f : settings.dryWet) * juce::MathConstants<float>::halfPi;
         const auto dryGain = std::cos(angle);
         const auto wetGain = std::sin(angle);
-        const auto left = applyOutputDynamics(synthesisHistory[0][historyIndex] * wetGain, 0)
-            + dryHistory[0][dryIndex] * dryGain;
-        const auto right = applyOutputDynamics(synthesisHistory[1][historyIndex] * wetGain, 1)
-            + dryHistory[1][dryIndex] * dryGain;
+        const auto dryLeft = dryHistory[0][dryIndex] * dryGain;
+        const auto dryRight = dryHistory[1][dryIndex] * dryGain;
+        const auto wetLeft = applyOutputDynamics(synthesisHistory[0][historyIndex] * wetGain, 0);
+        const auto wetRight = applyOutputDynamics(synthesisHistory[1][historyIndex] * wetGain, 1);
+        const auto left = wetLeft + dryLeft;
+        const auto right = wetRight + dryRight;
+        if (captureSpectrogram) spectrogram.push(dryLeft, dryRight, wetLeft, wetRight);
         outputLeft[sample] = std::isfinite(left) ? left : 0.0f;
         outputRight[sample] = std::isfinite(right) ? right : 0.0f;
+        if (std::abs(outputLeft[sample]) > silenceThreshold || std::abs(outputRight[sample]) > silenceThreshold)
+            quietSamples = 0;
+        else if (quietSamples != std::numeric_limits<std::uint64_t>::max())
+            ++quietSamples;
+        if (activityGuardSamples != 0) --activityGuardSamples;
         synthesisHistory[0][historyIndex] = 0.0f;
         synthesisHistory[1][historyIndex] = 0.0f;
 
         synthesiseSample();
         ++sampleCounter;
-
+        // Native pops current wet first, then ticks groups and decrements the
+        // hop counter. The frame at n=511 writes OLA beginning at n=512.
         if(sampleCounter%hopSize==0)
         {
             renderSpectrum();

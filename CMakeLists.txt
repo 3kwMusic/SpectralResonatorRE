@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 cmake_minimum_required(VERSION 3.22)
-project(SpectralResonatorRE VERSION 1.5.0)
+project(SpectralResonatorRE VERSION 1.5.4)
 
 include(cmake/JuceDependency.cmake)
 spectral_add_juce()

@@ -5,6 +5,9 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+// Borrowed, read-only VST3 queue view. Its lifetime is exactly one host process()
+// call. No SDK type leaks into the DSP or processor, and no event buffer is copied.
+// MIDI-controller parameter queues remain on JUCE's existing MIDI path.
 class SpectralAutomationSource
 {
 public:

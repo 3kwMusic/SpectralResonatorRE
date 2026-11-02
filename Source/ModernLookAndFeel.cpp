@@ -19,9 +19,11 @@ void ModernLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int wi
                                          float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
                                          juce::Slider& slider)
 {
-    const auto diameter = juce::jmin(static_cast<float>(width), static_cast<float>(height - 22)) - 12.0f;
+    // JUCE already removes the text-box area before calling this method.
+    // Reserving it again made the shorter HF/LF Damp dials almost disappear.
+    const auto diameter = juce::jmax(8.0f, juce::jmin(static_cast<float>(width), static_cast<float>(height)) - 4.0f);
     const auto radius = diameter * 0.5f;
-    const auto centre = juce::Point<float>(x + width * 0.5f, y + diameter * 0.5f + 3.0f);
+    const auto centre = juce::Point<float>(x + width * 0.5f, y + height * 0.5f);
     const auto angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
 
     g.setColour(SpectralPalette::background);

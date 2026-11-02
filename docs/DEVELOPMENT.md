@@ -5,7 +5,7 @@
 - `Source/Parameters.*`：28 个参数的 ID、范围、默认值、单位和 APVTS 布局。
 - `Source/PluginProcessor.*`：立体声总线、状态保存、采样偏移自动化与 MIDI 调度。
 - `Source/SpectralEngine.*`：1024 样本 FFT、谐振包络、频谱合成与声部管理，向宿主报告 1024 样本延迟。
-- `Source/PluginEditor.*`：控件和参数示意图；示意图不是实时频谱分析仪。
+- `Source/PluginEditor.*`：控件、Spectrogram / Spectrum 页签；声谱图采集实际干湿分量，Partials 叠加为参数示意。
 - `cmake/SpectralVST3Automation.*`：生成项目内 JUCE VST3 包装器副本，保留参数队列 point/offset；上游 JUCE 文件保持不变。
 
 连续曲线在归一化域插值后映射，离散参数按采样偏移更新。APVTS 原始值、宿主归一化值和显示单位分开；修改时保留插件 ID、参数 ID 及状态兼容性。音频线程不得分配内存。

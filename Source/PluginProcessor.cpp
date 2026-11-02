@@ -114,6 +114,7 @@ void SpectralResonatorProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     if (getTotalNumInputChannels() != 2 || getTotalNumOutputChannels() != 2)
         return;
 
+    beginHostBlock(buffer, midi);
     processAudioRange(buffer, midi, 0, buffer.getNumSamples(), false);
 }
 
@@ -126,7 +127,20 @@ void SpectralResonatorProcessor::processBlockBypassed(juce::AudioBuffer<float>& 
     if (getTotalNumInputChannels() != 2 || getTotalNumOutputChannels() != 2)
         return;
 
+    beginHostBlock(buffer, midi);
     processAudioRange(buffer, midi, 0, buffer.getNumSamples(), true);
+}
+
+void SpectralResonatorProcessor::beginHostBlock(const juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi)
+{
+    auto inputActive = false;
+    for (int channel = 0; channel < 2 && !inputActive; ++channel)
+    {
+        const auto* input = buffer.getReadPointer(channel);
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            if (input[sample] != 0.0f && std::isfinite(input[sample])) { inputActive = true; break; }
+    }
+    hostBlockActive = engine.beginHostBlock(inputActive, !midi.isEmpty(), buffer.getNumSamples());
 }
 
 void SpectralResonatorProcessor::processAudioRange(juce::AudioBuffer<float>& buffer,
@@ -138,6 +152,11 @@ void SpectralResonatorProcessor::processAudioRange(juce::AudioBuffer<float>& buf
     if (count <= 0) return;
     auto* left = buffer.getWritePointer(0) + start;
     auto* right = buffer.getWritePointer(1) + start;
+    if (!hostBlockActive)
+    {
+        engine.processInactive(left, right, count);
+        return;
+    }
     engine.process(left, right, left, right, count, midi, bypass, start, midiCursor);
 }
 
@@ -153,6 +172,7 @@ void SpectralResonatorProcessor::processBlockWithAutomation(juce::AudioBuffer<fl
 
     const auto length = buffer.getNumSamples();
     refreshAutomationGeneration();
+    beginHostBlock(buffer, midi);
     auto midiCursor = midi.cbegin();
     size_t cursorCount = 0;
     const auto readNext = [&source, length] (AutomationCursor& cursor)
@@ -175,7 +195,9 @@ void SpectralResonatorProcessor::processBlockWithAutomation(juce::AudioBuffer<fl
     {
         const auto count = source.pointCount(queue);
         if (count <= 0) continue;
-
+        // VST3 defines at most one queue for each parameter ID. Unknown/MIDI
+        // queues have no ordinary points in the wrapper view. Excess duplicate
+        // queues violate that contract; they cannot grow realtime storage.
         if (cursorCount == automationCursors.size()) break;
         auto& cursor = automationCursors[cursorCount++];
         cursor = {};
@@ -189,7 +211,8 @@ void SpectralResonatorProcessor::processBlockWithAutomation(juce::AudioBuffer<fl
         {
             const auto& history = automationHistory[static_cast<size_t>(cursor.history)];
             initializeIntegerStream(cursor.history, initial, !history.valid || history.published != initial);
-
+            // Keep host normalized values separate from snapped APVTS raw
+            // values. A GUI/external change invalidates the old curve origin.
             if (history.valid && history.published == initial && !cursor.discrete)
                 cursor.previousValue = history.normalized;
         }
@@ -224,7 +247,8 @@ void SpectralResonatorProcessor::processBlockWithAutomation(juce::AudioBuffer<fl
             }
             if (!cursor.discrete && cursor.hasNext)
             {
-
+                // VST3's implicit preceding point is (-1, last value). Curves
+                // interpolate in normalized space before parameter mapping.
                 const auto fraction = static_cast<double>(position - cursor.previousOffset)
                     / static_cast<double>(cursor.nextOffset - cursor.previousOffset);
                 const auto value = std::fma(fraction, cursor.nextValue - cursor.previousValue,
@@ -239,7 +263,8 @@ void SpectralResonatorProcessor::processBlockWithAutomation(juce::AudioBuffer<fl
                 next = juce::jmin(next, cursor.nextOffset);
             }
         }
-
+        // All values at a boundary form one tuple before native callbacks run.
+        // The engine applies its verified Unison(oldMode,newU) -> Mode order.
         processAudioRange(buffer, midi, position, next - position, source.isBypassed(), &midiCursor);
         if (position == length) break;
         position = next;
@@ -280,7 +305,9 @@ void SpectralResonatorProcessor::recordIntegerStream(int index, double normalize
         if (index == binding.parameter->getParameterIndex())
         {
             auto& history = automationHistory[static_cast<size_t>(index)];
-
+            // Range conversion deliberately skips snapToLegalValue here. The
+            // native tick caches the raw float, then rounds only the callback
+            // argument. Comparing snapped APVTS values loses repeated setters.
             const auto raw = binding.parameter->getNormalisableRange().convertFrom0to1(static_cast<float>(normalized));
             if (!history.integerStreamValid || raw != history.integerStream)
                 pendingIntegerCallbacks |= binding.callback;
@@ -292,7 +319,8 @@ void SpectralResonatorProcessor::recordIntegerStream(int index, double normalize
 
 void SpectralResonatorProcessor::synchronizeAutomationFlush(SpectralAutomationSource& source)
 {
-
+    // Called after the wrapper's ordinary no-audio/suspended parameter flush.
+    // Preserve its last normalized point even when parameter mapping snaps it.
     refreshAutomationGeneration();
     for (int queue = 0; queue < source.queueCount(); ++queue)
     {

@@ -5,6 +5,7 @@
 
 #include "PluginProcessor.h"
 #include "ModernLookAndFeel.h"
+#include "SpectrogramDisplay.h"
 
 class SpectralResonatorEditor final : public juce::AudioProcessorEditor,
                                       private juce::Timer
@@ -31,6 +32,8 @@ private:
 
     SpectralResonatorProcessor& processor;
     ModernLookAndFeel modernLookAndFeel;
+    SpectrogramDisplay spectrogramDisplay;
+    juce::TextButton spectrogramTab {"Spectrogram"}, spectrumTab {"Spectrum / Partials"};
     juce::ComboBox pitchModeBox, monoPolyBox, polyphonyBox, frequencyDialModeBox, modModeBox, unisonBox, scaleBox, scaleRootBox;
     juce::ToggleButton midiGateButton, useScaleButton, quantizeButton;
     juce::Slider glideSlider, pitchBendSlider, frequencySlider, frequencyNoteSlider;

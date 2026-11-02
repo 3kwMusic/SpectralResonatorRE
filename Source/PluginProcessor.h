@@ -43,6 +43,9 @@ public:
         return engine.copyVisualizationData(destination);
     }
     double visualizationSampleRate() const { return engine.visualizationSampleRate(); }
+    void setSpectrogramActive(bool active) { engine.setSpectrogramActive(active); }
+    bool readSpectrogramFrame(SpectrogramStream::Frame& frame) { return engine.readSpectrogramFrame(frame); }
+    std::uint64_t spectrogramGeneration() const { return engine.spectrogramGeneration(); }
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -79,6 +82,8 @@ private:
         std::atomic<float>* dryWet = nullptr;
     } parameterValues;
     SpectralEngine::Settings currentSettings();
+    void beginHostBlock(const juce::AudioBuffer<float>&, const juce::MidiBuffer&);
+    bool hostBlockActive = false;
     void processAudioRange(juce::AudioBuffer<float>&, const juce::MidiBuffer&,
                            int start, int count, bool bypass,
                            juce::MidiBufferIterator* midiCursor = nullptr);
@@ -89,7 +94,8 @@ private:
         double previousValue = 0, nextValue = 0;
         bool discrete = true, hasNext = false;
     };
-
+    // One queue per exposed parameter plus JUCE's synthetic bypass. Storage is
+    // sized during construction, never from a host audio callback.
     std::vector<AutomationCursor> automationCursors;
     struct AutomationHistory
     {

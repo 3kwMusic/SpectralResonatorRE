@@ -131,6 +131,8 @@ public:
     bool isDiscrete() const override { return true; }
 };
 
+// JUCE AudioParameterInt does not override isDiscrete(). This native property
+// has no RealtimeModel buffer, so expose its changes as offset steps explicitly.
 class SteppedIntegerParameter final : public juce::AudioParameterInt
 {
 public:
@@ -141,7 +143,7 @@ public:
 juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
-
+    // Current binary's FrequencyHz and Harmonics models normalise in log2 space.
     const auto logarithmicRange = [] (float minimum, float maximum)
     {
         return juce::NormalisableRange<float>(minimum, maximum,
@@ -162,7 +164,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         [] (float value, int) { return juce::String(value, 1) + "%"; });
     const auto semitones = juce::AudioParameterFloatAttributes().withStringFromValueFunction(
         [] (float value, int) { return juce::String(value, 2) + " st"; });
-
+    // RealtimeModel<int> ticks a numeric curve and then rounds half away from
+    // zero (570f70). JUCE's default interval snap rounds negative halves up.
     const auto integerCurveRange = [] (float minimum, float maximum)
     {
         auto range = juce::NormalisableRange<float>(minimum, maximum,
@@ -177,7 +180,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 
     layout.add(std::make_unique<juce::AudioParameterChoice>(pitchMode, "Pitch Mode", pitchModeChoices(), 0));
     layout.add(std::make_unique<juce::AudioParameterChoice>(monoPolyMode, "Mono/Poly", monoPolyChoices(), 0));
-
+    // Native enum 1..4 -> 2/4/8/16. Keep APVTS raw=voice count so old
+    // ValueTree states containing raw8 still restore eight voices.
     layout.add(std::make_unique<PolyphonyParameter>());
     layout.add(std::make_unique<juce::AudioParameterBool>(midiGate, "MIDI Gate", false));
     layout.add(std::make_unique<juce::AudioParameterFloat>(glideMs, "Glide",
@@ -186,7 +190,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         juce::AudioParameterIntAttributes().withLabel("st")));
     layout.add(std::make_unique<juce::AudioParameterFloat>(frequencyHz, "Frequency",
         logarithmicRange(8.2f, 2000.0f), 110.0f,
-        juce::AudioParameterFloatAttributes().withLabel("Hz")));
+        juce::AudioParameterFloatAttributes().withLabel("Hz").withStringFromValueFunction(
+            [] (float value, int) { return juce::String(value, 2) + " Hz"; })));
     layout.add(std::make_unique<juce::AudioParameterFloat>(frequencyNote, "Frequency Note",
         integerCurveRange(0.0f, 96.0f), 45.0f));
     layout.add(std::make_unique<juce::AudioParameterChoice>(frequencyDialMode, "Frequency Dial Mode", frequencyDialModeChoices(), 0));
